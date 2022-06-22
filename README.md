@@ -3,7 +3,7 @@
 ## Table of Branches
 
 main - pretrain branch is mobileformer pretrained code  
-tftrain - pretrain code of tensorflow version  
+tfmain - pretrain code of tensorflow version  
 rembridge - rembridge branch is mobileformer compression code  
 tune - tune branch is mobileformer tuned code using structural regularization  
 distillation - distillation branch is mobileformer distilled code using Resnet152 model  
