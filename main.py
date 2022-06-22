@@ -4,13 +4,14 @@ import torchvision.datasets as dset
 from torchvision import transforms
 from torch.utils.data import DataLoader
 import numpy as np
+import sklearn.model_selection as ms
 
 from model_generator import *
 from process_data import autoaugment
-from process_data.utils import cutmix, cutmix_criterion
+from process_data.mixup import mixup_data, mixup_criterion
 
 
-def check_accuracy(loader, model, device=None, dtype=None):
+def check_accuracy(loader, device, dtype, model):
     model.eval()
     total_correct = 0
     total_samples = 0
@@ -43,15 +44,11 @@ def train(
         model=None,
         criterion=nn.CrossEntropyLoss(),
         scheduler=None, optimizer=None,
-        epochs=450, check_point_dir=None, save_epochs=None
+        epochs=450, save_epochs=3
 ):
     acc = 0
     accs = [0]
     losses = []
-
-    record_dir_acc = check_point_dir + 'record_val_acc.npy'
-    record_dir_loss = check_point_dir + 'record_loss.npy'
-    model_save_dir = check_point_dir + 'mobile_former_151.pt'
 
     model = model.to(device)
 
@@ -63,13 +60,13 @@ def train(
             y = y.to(device=device, dtype=torch.long, non_blocking=True)
 
             # 原x+混x，原t，混t，原混比
-            inputs, targets_a, targets_b, lam = cutmix(x, y, 1)
+            inputs, targets_a, targets_b, lam = mixup_data(x, y, 1)
             # 原x+混x->原y+混y
             outputs = model(inputs)
 
             # 原y+混y和原t，混t求损失：lam越大，小方块越小，被识别成真图片的概率越大
             # 2
-            loss = cutmix_criterion(criterion, outputs, targets_a, targets_b, lam)
+            loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
             loss_value = np.array(loss.item())
             total_loss += loss_value
 
@@ -90,7 +87,7 @@ def train(
         total_loss /= t
         losses.append(total_loss)
 
-        acc = check_accuracy(loader_val, model, device=device)
+        acc = check_accuracy(loader_val, device, dtype, model)
         accs.append(np.array(acc))
 
         # 每个epoch记录一次测试集准确率和所有batch的平均训练损失
@@ -105,9 +102,7 @@ def train(
         file2.close()
 
         # 如果到了保存的epoch或者是训练完成的最后一个epoch
-        if (e % save_epochs == 0 and e != 0) or e == epochs - 1 or acc >= 0.765:
-            np.save(record_dir_acc, np.array(accs))
-            np.save(record_dir_loss, np.array(losses))
+        if (e % save_epochs == 0 and e != 0) or e == epochs - 1 or acc >= 0.74:
             model.eval()
             # 保存模型参数
             torch.save(model.state_dict(), './saved_model/mobile_former_151.pth')
@@ -124,10 +119,9 @@ def run(
         device=None, dtype=None,
         model=None,
         criterion=nn.CrossEntropyLoss(),
-        T_mult=2,
         epoch=450, lr=0.0009, wd=0.10,
-        check_point_dir=None, save_epochs=3,
-
+        save_epochs=3,
+        MULTI_GPU=True,
 ):
     epochs = epoch
     model_ = model
@@ -135,78 +129,86 @@ def run(
     weight_decay = wd
     print('Training under lr: ' + str(lr) + ' , wd: ' + str(wd) + ' for ', str(epochs), ' epochs.')
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate,
-                                  betas=(0.9, 0.999), weight_decay=wd)
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=3, T_mult=T_mult)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=wd)
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=3)
+
+    if MULTI_GPU:
+        optimizer = nn.DataParallel(optimizer, device_ids=device_ids)
+        lr_scheduler = nn.DataParallel(lr_scheduler, device_ids=device_ids)
+
     args = {
         'loader_train': loader_train, 'loader_val': loader_val,
         'device': device, 'dtype': dtype,
         'model': model_,
         'criterion': criterion,
-        'scheduler': lr_scheduler, 'optimizer': optimizer,
+        'scheduler': lr_scheduler.module, 'optimizer': optimizer.module,
         'epochs': epochs,
-        'check_point_dir': check_point_dir, 'save_epochs': save_epochs,
+        'save_epochs': save_epochs,
     }
     print('#############################     Training...     #############################')
     val_acc = train(**args)
     # 最后一个epoch的最后一次测试集准确率
     print('Training for ' + str(epochs) + ' epochs, learning rate: ', learning_rate, ', weight decay: ',
           weight_decay, ', Val acc: ', val_acc)
-    print('Done, model saved in ', check_point_dir)
 
 
 if __name__ == '__main__':
     print('############################### Dataset loading ###############################')
 
     transform = transforms.Compose([
-        transforms.Resize(224),
+        transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
     ])
     transform_aug = transforms.Compose([
-        autoaugment.CIFAR10Policy(),
-        transforms.Resize(224),
+        autoaugment.ImageNetPolicy(),
+        transforms.Resize((224, 224)),
         transforms.ToTensor(),
         # 接收tensor
         transforms.RandomErasing(),
         transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
     ])
-    # 50000无增强，50000有增强
-    cifar_train = dset.CIFAR100('./dataset/', train=True, download=True, transform=transform)
-    cifar_train_aug = dset.CIFAR100('./dataset/', train=True, download=True, transform=transform_aug)
-    cifar_train += cifar_train_aug
 
-    loader_train = DataLoader(cifar_train, batch_size=128, shuffle=True, pin_memory=True)
-    print(len(cifar_train))
+    image_train = dset.ImageFolder(root='/datasets/ILSVRC2012/train/', transform=transform_aug)
+    loader_train = DataLoader(image_train, batch_size=512, shuffle=True)
+    print(len(image_train))
 
-    # 10000无增强，10000有增强
-    cifar_val = dset.CIFAR100('./dataset/', train=False, download=True, transform=transform)
-    # cifar_val_aug = dset.CIFAR100('./dataset/', train=False, download=True, transform=transform_aug)
-    # cifar_val += cifar_val_aug
-
-    loader_val = DataLoader(cifar_val, batch_size=64, shuffle=True, pin_memory=True)
-    print(len(cifar_val))
-
-    # imagenet_train = dset.ImageFolder(root='/datasets/ILSVRC2012/train/', transform=transform)
-    # loader_train = DataLoader(imagenet_train, batch_size=256, shuffle=True, num_workers=4)
-    # print(len(imagenet_train))
-    # imagenet_val = dset.ImageFolder(root='./val/', transform=transform)
-    # loader_val = DataLoader(imagenet_val, batch_size=128, shuffle=True, num_workers=4)
-    # print(len(imagenet_val))
+    image_val = dset.ImageFolder(root='./val/', transform=transform)
+    loader_val = DataLoader(image_val, batch_size=256, shuffle=False)
+    print(len(image_val))
 
     print('###############################  Dataset loaded  ##############################')
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = '0'
-    device = torch.device('cuda')
+    print('############################### multi GPU loading ###############################')
+
+    # 检测机器是否有多张显卡
+    if torch.cuda.device_count() > 1:
+        MULTI_GPU = True
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1"
+        device_ids = [0, 1]
+    else:
+        MULTI_GPU = False
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    print('############################### multi GPU loaded ###############################')
+
+    print('############################### model loading ###############################')
+
+    model = mobile_former_151(1000)
+    if MULTI_GPU:
+        model = nn.DataParallel(model, device_ids=device_ids)
+    model.to(device)
+
+    print('############################### model loaded ###############################')
+
     args = {
         'loader_train': loader_train, 'loader_val': loader_val,
         'device': device, 'dtype': torch.float32,
-        'model': mobile_former_151(100),
-        # 'model': mobile_former_151(100, pre_train=True, state_dir='./sparsity_model/mobile_former_151_s.pt'),
+        'model': model,
         'criterion': nn.CrossEntropyLoss(),
-        # 余弦退火
-        'T_mult': 2,
-        'epoch': 300, 'lr': 0.0009, 'wd': 0.10,
-        'check_point_dir': './saved_model/', 'save_epochs': 3,
+        'epoch': 450, 'lr': 0.0009, 'wd': 0.10,
+        'save_epochs': 3,
+        'MULTI_GPU': True,
     }
     run(**args)

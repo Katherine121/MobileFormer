@@ -9,12 +9,6 @@ from mobile_former.former import Former
 from mobile_former.bridge import Mobile2Former, Former2Mobile
 
 
-class hswish(nn.Module):
-    def forward(self, x):
-        out = x * F.relu6(x + 3, inplace=True) / 6
-        return out
-
-
 class BaseBlock(nn.Module):
     def __init__(self, inp, exp, out, se, stride, heads, dim):
         super(BaseBlock, self).__init__()
@@ -43,12 +37,12 @@ class MobileFormer(nn.Module):
         self.stem = nn.Sequential(
             nn.Conv2d(3, cfg['stem'], kernel_size=3, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(cfg['stem']),
-            hswish(),
+            nn.Hardswish(),
         )
         # bneck 先*2后还原，步长为1，组卷积
         self.bneck = nn.Sequential(
             nn.Conv2d(cfg['stem'], cfg['bneck']['e'], kernel_size=3, stride=cfg['bneck']['s'], padding=1, groups=cfg['stem']),
-            hswish(),
+            nn.Hardswish(),
             nn.Conv2d(cfg['bneck']['e'], cfg['bneck']['o'], kernel_size=1, stride=1),
             nn.BatchNorm2d(cfg['bneck']['o'])
         )
@@ -67,7 +61,7 @@ class MobileFormer(nn.Module):
 
         self.head = nn.Sequential(
             nn.Linear(exp + cfg['embed'], cfg['fc1']),
-            hswish(),
+            nn.Hardswish(),
             nn.Linear(cfg['fc1'], cfg['fc2'])
         )
 

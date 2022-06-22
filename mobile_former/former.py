@@ -3,18 +3,18 @@ from torch import nn
 from einops import rearrange
 
 
-class PreNorm(nn.Module):
+class PostNorm(nn.Module):
     def __init__(self, dim, fn):
-        super(PreNorm, self).__init__()
-        self.norm = nn.LayerNorm(dim)
+        super(PostNorm, self).__init__()
         self.fn = fn
+        self.norm = nn.LayerNorm(dim)
 
     def forward(self, x):
-        return self.fn(self.norm(x))
+        return self.norm(self.fn(x))
 
 
 class FeedForward(nn.Module):
-    def __init__(self, dim, mlp_dim, dropout=0.3):
+    def __init__(self, dim, mlp_dim, dropout=0.2):
         super(FeedForward, self).__init__()
         self.net = nn.Sequential(
             nn.Linear(dim, mlp_dim),
@@ -30,7 +30,7 @@ class FeedForward(nn.Module):
 
 
 class Attention(nn.Module):
-    def __init__(self, dim=192, heads=2, dim_head=32, dropout=0.3):
+    def __init__(self, dim=192, heads=2, dim_head=32, dropout=0.2):
         super(Attention, self).__init__()
         inner_dim = heads * dim_head  # head数量和每个head的维度
 
@@ -70,16 +70,16 @@ class Attention(nn.Module):
 # inputs: n m d
 # output: n m d
 class Former(nn.Module):
-    def __init__(self, dim, depth=1, heads=2, dim_head=32, dropout=0.3):
+    def __init__(self, dim, depth=1, heads=2, dim_head=32, dropout=0.2):
         super(Former, self).__init__()
         # 2 instead of 4
         mlp_dim = dim * 2
         self.layers = nn.ModuleList([])
         self.layers.append(nn.ModuleList([
             # 先bn，后多头注意力，再前馈
-            PreNorm(dim, Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout)),
+            PostNorm(dim, Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout)),
             # 先*2后还原
-            PreNorm(dim, FeedForward(dim, mlp_dim=mlp_dim, dropout=dropout))
+            PostNorm(dim, FeedForward(dim, mlp_dim=mlp_dim, dropout=dropout))
         ]))
 
     def forward(self, z):

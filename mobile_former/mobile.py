@@ -50,7 +50,7 @@ class Mobile(nn.Module):
         self.bn3 = nn.BatchNorm2d(out)
 
         self.shortcut = nn.Identity()
-        if stride == 1 and inp != out:
+        if inp != out:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(inp, out, kernel_size=1, stride=1, padding=0, bias=False),
                 nn.BatchNorm2d(out),
@@ -86,8 +86,8 @@ class Mobile(nn.Module):
         # 这里用的是普通relu，所以不加第一个token
         out = self.bn3(self.conv3(out))
 
-        # 如果图片没有下采样，则残差连接，此模块没有下采样所以要残差连接
-        out = out + self.shortcut(x) if self.stride == 1 else out
+        # 如果图片没有下采样，则残差连接
+        out = out + self.shortcut(x)
         return out
 
 
@@ -113,7 +113,8 @@ class MobileDown(nn.Module):
         self.dw_bn1 = nn.BatchNorm2d(hid)
         self.dw_act1 = MyDyRelu(2)
 
-        self.pw_conv1 = nn.Conv2d(hid, inp, kernel_size=1, stride=1, padding=0, bias=False)
+        self.pw_conv1 = nn.Conv2d(hid, inp, kernel_size=1, stride=1,
+                                  padding=0, bias=False)
         self.pw_bn1 = nn.BatchNorm2d(inp)
         self.pw_act1 = nn.ReLU()
 
@@ -122,15 +123,9 @@ class MobileDown(nn.Module):
         self.dw_bn2 = nn.BatchNorm2d(hid)
         self.dw_act2 = MyDyRelu(2)
 
-        self.pw_conv2 = nn.Conv2d(hid, out, kernel_size=1, stride=1, padding=0, bias=False)
+        self.pw_conv2 = nn.Conv2d(hid, out, kernel_size=1, stride=1,
+                                  padding=0, bias=False)
         self.pw_bn2 = nn.BatchNorm2d(out)
-
-        self.shortcut = nn.Identity()
-        if stride == 1 and inp != out:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(inp, out, kernel_size=1, stride=1, padding=0, bias=False),
-                nn.BatchNorm2d(out),
-            )
 
     def get_relu_coefs(self, z):
         # 取第一个token
@@ -165,6 +160,4 @@ class MobileDown(nn.Module):
         # 这里用的是普通relu，所以不加第一个token
         out = self.pw_bn2(self.pw_conv2(out))
 
-        # 如果图片没有下采样，则残差连接，此模块有下采样所以不残差连接
-        out = out + self.shortcut(x) if self.stride == 1 else out
         return out
